@@ -1,5 +1,5 @@
 import makeConfig from "../../lib/plugins/config.js"
-import { Bot as GrammyBot, InputFile,  } from "grammy";
+import { Bot as GrammyBot, InputFile, InlineKeyboard } from "grammy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { fileTypeFromBuffer } from "file-type";
 import imageSize from "image-size";
@@ -92,6 +92,11 @@ const adapter = new class TelegramAdapter {
                 if (sendMsgInfo) {
                     msgs.push(sendMsgInfo);
                     if (sendMsgInfo.message_id) message_id.push(sendMsgInfo.message_id);
+                    // 统计更新
+                    ctx.bot.stat.sent_msg_cnt++;
+                    if (global.redis) {
+                        redis.incr(`Yz:count:send:msg:bot:${ctx.self_id}:total`);
+                    }
                 }
             } catch (error) {
                 Bot.makeLog("error", `发送文本失败：[${ctx.id}] ${error.message}`, ctx.self_id);
@@ -105,6 +110,13 @@ const adapter = new class TelegramAdapter {
                 if (ret) {
                     msgs.push(ret);
                     if (ret.message_id) message_id.push(ret.message_id);
+                    // 统计更新
+                    ctx.bot.stat.sent_msg_cnt++;
+                    ctx.bot.stat.sent_image_cnt++; // 目前只发图
+                    if (global.redis) {
+                        redis.incr(`Yz:count:send:msg:bot:${ctx.self_id}:total`);
+                        redis.incr(`Yz:count:send:image:bot:${ctx.self_id}:total`);
+                    }
                 }
             } catch (error) {
                 Bot.makeLog("error", `发送媒体失败：[${ctx.id}] ${error.message}`, ctx.self_id);
@@ -190,7 +202,19 @@ const adapter = new class TelegramAdapter {
                 }
             },
             "button": async (i) => {
-                // Handle button logic if needed
+                const keyboard = new InlineKeyboard();
+                const rows = Array.isArray(i.buttons[0]) ? i.buttons : [i.buttons];
+                for (const row of rows) {
+                    for (const btn of row) {
+                        if (btn.link) {
+                            keyboard.url(btn.text, btn.link);
+                        } else if (btn.callback) {
+                            keyboard.text(btn.text, btn.callback);
+                        }
+                    }
+                    keyboard.row();
+                }
+                opts.reply_markup = keyboard;
             },
             "default": async (i) => {
                 textParts.push(JSON.stringify(i));
@@ -204,27 +228,44 @@ const adapter = new class TelegramAdapter {
         const sendHandler = async (messages) => {
             // 构造一文一图的情况，如果出现两张都是图片则给予后续逻辑处理
             if (Array.isArray(messages) &&　messages?.type !== 'node') {
-                // 找出媒体和文字
+                // 找出媒体、文字和其他特殊段（如 reply, at, button）
                 const mediaAndOthers = messages.reduce(
                     (acc, item) => {
                         if (typeof item === "object") {
-                            acc.media.push(item);
+                            if (item.type === "reply") {
+                                acc.reply = item;
+                                opts.reply_to_message_id = item.id;
+                            } else if (item.type === "at") {
+                                // 暂时不处理 at 转换，由后续 sendText/sendMessage 自然处理或者转换用户名
+                                acc.others += ` @${item.qq} `;
+                            } else if (item.type === "button") {
+                                handlers.button(item); // 直接调用 handler 来设置 opts.reply_markup
+                            } else {
+                                acc.media.push(item);
+                            }
                         } else {
                             acc.others += item;
                         }
                         return acc;
                     },
-                    { media: [], others: '' }
+                    { media: [], others: '', reply: null }
                 );
                 // 判断是否有媒体，没有就发送文字，有就图文并茂
-                if (mediaAndOthers.media.length === 1 && mediaAndOthers.media[0].type !== 'at') {
+                if (mediaAndOthers.media.length === 1) {
                     const singleMedia = mediaAndOthers.media[0];
                     // 单个媒体和文字
                     const file = await constructFileType(singleMedia);
                     // 发送图文
-                    await ctx.bot.api.sendPhoto(ctx.id, new InputFile(file.buffer, file.name), { caption: mediaAndOthers.others });
+                    await ctx.bot.api.sendPhoto(ctx.id, new InputFile(file.buffer, file.name), { ...opts, caption: mediaAndOthers.others });
                     // 打印日志
                     Bot.makeLog("info", `发送媒体组：${formatSendMessage(ctx, file, mediaAndOthers.others)}`, ctx.self_id);
+                    // 统计更新
+                    ctx.bot.stat.sent_msg_cnt++;
+                    ctx.bot.stat.sent_image_cnt++;
+                    if (global.redis) {
+                        redis.incr(`Yz:count:send:msg:bot:${ctx.self_id}:total`);
+                        redis.incr(`Yz:count:send:image:bot:${ctx.self_id}:total`);
+                    }
                 } else if (mediaAndOthers.media.length >= 2) {
                     // 出现多个媒体和文字
                     const mediaCollection = [];
@@ -237,13 +278,27 @@ const adapter = new class TelegramAdapter {
                         }
                         mediaCollection.push(constructMedia);
                     }
-                    await ctx.bot.api.sendMediaGroup(ctx.id, mediaCollection);
+                    await ctx.bot.api.sendMediaGroup(ctx.id, mediaCollection, opts);
                     // 打印日志
                     Bot.makeLog("info", `发送媒体组：${formatSendMessage(ctx, mediaAndOthers.media, mediaAndOthers.others)}`, ctx.self_id);
+                    // 统计更新
+                    ctx.bot.stat.sent_msg_cnt++;
+                    ctx.bot.stat.sent_image_cnt += mediaAndOthers.media.length;
+                    if (global.redis) {
+                        redis.incr(`Yz:count:send:msg:bot:${ctx.self_id}:total`);
+                        for (let i = 0; i < mediaAndOthers.media.length; i++) {
+                            redis.incr(`Yz:count:send:image:bot:${ctx.self_id}:total`);
+                        }
+                    }
                 } else {
                     // 没有媒体和文字
-                    await ctx.bot.api.sendMessage(ctx.id, mediaAndOthers.others);
+                    await ctx.bot.api.sendMessage(ctx.id, mediaAndOthers.others, opts);
                     Bot.makeLog("info", `发送文本：${mediaAndOthers.others}`, ctx.self_id);
+                    // 统计更新
+                    ctx.bot.stat.sent_msg_cnt++;
+                    if (global.redis) {
+                        redis.incr(`Yz:count:send:msg:bot:${ctx.self_id}:total`);
+                    }
                 }
                 return;
             } else if (Array.isArray(messages?.data) &&　messages?.type === 'node') {
@@ -310,6 +365,22 @@ const adapter = new class TelegramAdapter {
         for (const i of message_id)
             msgs.push(await data.bot.deleteMessage(data.id, i, opts))
         return msgs
+    }
+
+    /**
+     * 编辑消息文本（配合 Inline Keyboard 回调使用）
+     * @param data - 包含 bot, id (chat_id), self_id
+     * @param message_id - 要编辑的消息 ID
+     * @param text - 新的文本内容
+     * @param opts - 可选参数，如 reply_markup (InlineKeyboard)
+     */
+    async editMsg(data, message_id, text, opts = {}) {
+        Bot.makeLog("info", `编辑消息：[${ data.id }] ${ message_id }`, data.self_id)
+        try {
+            return await data.bot.api.editMessageText(data.id, message_id, text, opts)
+        } catch (error) {
+            Bot.makeLog("error", `编辑消息失败：[${ data.id }] ${ error.message }`, data.self_id)
+        }
     }
 
     /**
@@ -402,6 +473,7 @@ const adapter = new class TelegramAdapter {
             ...i,
             sendMsg: (msg, opts) => this.sendMsg(i, msg, opts),
             recallMsg: (message_id, opts) => this.recallMsg(i, message_id, opts),
+            editMsg: (message_id, text, opts) => this.editMsg(i, message_id, text, opts),
             getInfo: () => i.bot.api.getChat(i.id),
             getAvatarUrl: () => this.getAvatarUrl(i),
             pickMember: user_id => this.pickMember(id, i.id, user_id),
@@ -420,12 +492,17 @@ const adapter = new class TelegramAdapter {
         data.post_type = "message";
         data.user_id = `tg_${ ctx.from.id }`
         data.sender = {
-            user_id: ctx.user_id,
-            nickname: `${ ctx.from.first_name }-${ ctx.from.username }`,
+            user_id: data.user_id,
+            nickname: `${ ctx.from.first_name || '' }${ ctx.from.username ? '-' + ctx.from.username : '' }`,
         }
-        data.bot.fl.set(ctx.user_id, { ...ctx.from, ...ctx.sender })
+        data.bot.fl.set(data.user_id, { ...ctx.from, ...data.sender })
         data.message_type = ctx.chat.type === "supergroup" ? "group" : ctx.chat.type;
         data.message = [];
+        data.message_id = ctx.message.message_id;
+        data.id = ctx.chat.id;
+        data.reply = (msg, clear = false, opts = {}) => {
+            return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: data.message_id })
+        }
         data.raw_message = "";
 
         // 消息内容
@@ -441,7 +518,7 @@ const adapter = new class TelegramAdapter {
             // 制作群消息
             const groupMessage = ctx.update.message;
             data.group_id = `tg_${ groupMessage.chat.id }`
-            data.group_name = `${ groupMessage.chat.title }-${ groupMessage.chat.username }`
+            data.group_name = `${ groupMessage.chat.title || '' }${ groupMessage.chat.username ? '-' + groupMessage.chat.username : '' }`
             data.bot.gl.set(groupMessage.chat.id, {
                 ...groupMessage.chat,
                 group_id: data.group_id,
@@ -450,6 +527,13 @@ const adapter = new class TelegramAdapter {
             // 制作完成，打印
             Bot.makeLog("info", `群消息：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ data.raw_message }`, data.self_id)
         }
+
+        // 统计更新
+        data.bot.stat.recv_msg_cnt++
+        if (global.redis) {
+            redis.incr(`Yz:count:receive:msg:bot:${ data.self_id }:total`)
+        }
+
         Bot.em(`${ data.post_type }.${ data.message_type }`, data);
     }
 
@@ -475,15 +559,24 @@ const adapter = new class TelegramAdapter {
 
         // 配置信息
         Bot[id] = grammyBot;
+        if (!Bot.uin.includes(id)) Bot.uin.push(id)
         Bot[id].adapter = this;
         Bot[id].uid = id;
-        Bot[id].nickname = `${ Bot[id].info.first_name }-${ Bot[id].info.username }`
+        Bot[id].uin = id;
+        Bot[id].nickname = `${ Bot[id].info.first_name || '' }${ Bot[id].info.username ? '-' + Bot[id].info.username : '' }`
         Bot[id].version = {
             id: this.id,
             name: this.name,
+            app_name: "GrammY",
+            app_version: "v1.41.1",
             version: this.version,
         }
-        Bot[id].stat = { start_time: Date.now() / 1000 }
+        Bot[id].stat = {
+            start_time: Date.now() / 1000,
+            sent_msg_cnt: 0,
+            recv_msg_cnt: 0,
+            sent_image_cnt: 0
+        }
         Bot[id].fl = new Map
         Bot[id].gl = new Map
         Bot[id].gml = new Map
@@ -501,10 +594,60 @@ const adapter = new class TelegramAdapter {
             this.makeMessage(ctx)
         })
 
+        // 监听 Inline Keyboard 按钮点击回调
+        Bot[id].on("callback_query:data", async (ctx) => {
+            const callbackData = ctx.callbackQuery.data;
+            const from = ctx.callbackQuery.from;
+            const message = ctx.callbackQuery.message;
+
+            // 应答 TG 客户端（关闭按钮上的加载动画）
+            await ctx.answerCallbackQuery();
+
+            const data = {};
+            data.bot = Bot[id];
+            data.self_id = id;
+            data.post_type = "message";
+            data.user_id = `tg_${ from.id }`;
+            data.sender = {
+                user_id: data.user_id,
+                nickname: `${ from.first_name || '' }${ from.username ? '-' + from.username : '' }`,
+            };
+            data.bot.fl.set(data.user_id, { ...from, ...data.sender });
+
+            // 消息内容 = callback_data
+            data.msg = callbackData;
+            data.raw_message = callbackData;
+            data.message = [{ type: "text", text: callbackData }];
+
+            // 附加回调原始信息，方便高级插件使用
+            data.callback_query_id = ctx.callbackQuery.id;
+            data.callback_message_id = message?.message_id;
+            data.id = message?.chat.id;
+            data.reply = (msg, clear = false, opts = {}) => {
+                return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: data.callback_message_id })
+            }
+
+            if (message && message.chat.type !== "private") {
+                data.group_name = `${ message.chat.title || '' }`;
+                Bot.makeLog("info", `按钮回调：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+            } else {
+                data.message_type = "private";
+                Bot.makeLog("info", `按钮回调：[${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+            }
+
+            // 统计更新
+            data.bot.stat.recv_msg_cnt++
+            if (global.redis) {
+                redis.incr(`Yz:count:receive:msg:bot:${ id }:total`)
+            }
+
+            Bot.em(`${ data.post_type }.${ data.message_type }`, data);
+        })
+
         Bot.makeLog("mark", `${ this.name }(${ this.id }) - [${ Bot[id].nickname }] - ${ this.version } 已连接`, id)
         Bot.em(`connect.${ id }`, { self_id: id })
         // 这里不要加 await 防止进程阻塞
-        grammyBot.start();
+        Bot[id].start();
         return true;
     }
 
