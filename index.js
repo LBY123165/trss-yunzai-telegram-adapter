@@ -493,7 +493,7 @@ const adapter = new class TelegramAdapter {
         data.user_id = `tg_${ ctx.from.id }`
         data.sender = {
             user_id: data.user_id,
-            nickname: `${ ctx.from.first_name || '' }${ ctx.from.username ? '-' + ctx.from.username : '' }`,
+            nickname: ctx.from.first_name || ctx.from.username || "Unknown",
         }
         data.bot.fl.set(data.user_id, { ...ctx.from, ...data.sender })
         data.message_type = ctx.chat.type === "supergroup" ? "group" : ctx.chat.type;
@@ -563,7 +563,7 @@ const adapter = new class TelegramAdapter {
         Bot[id].adapter = this;
         Bot[id].uid = id;
         Bot[id].uin = id;
-        Bot[id].nickname = `${ Bot[id].info.first_name || '' }${ Bot[id].info.username ? '-' + Bot[id].info.username : '' }`
+        Bot[id].nickname = Bot[id].info.first_name || Bot[id].info.username || "TelegramBot"
         Bot[id].version = {
             id: this.id,
             name: this.name,
@@ -610,7 +610,7 @@ const adapter = new class TelegramAdapter {
             data.user_id = `tg_${ from.id }`;
             data.sender = {
                 user_id: data.user_id,
-                nickname: `${ from.first_name || '' }${ from.username ? '-' + from.username : '' }`,
+                nickname: from.first_name || from.username || "Unknown",
             };
             data.bot.fl.set(data.user_id, { ...from, ...data.sender });
 
