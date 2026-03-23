@@ -17,7 +17,7 @@
 1. 准备：[TRSS-Yunzai](https://gitee.com/TimeRainStarSky/Yunzai)
 
 2. 【第一次 / 更新】：在`TRSS-Yunzai`目录下输入以下命令
-   > curl -fsSL https://gitee.com/kyrzy0416/trss-yunzai-telegram-adapter/raw/master/index.js > plugins/adapter/Telegram.js  
+   > curl -fsSL https://github.com/rock8526652/trss-yunzai-telegram-adapter/raw/new-dev/index.js > plugins/adapter/Telegram.js  
 
    > // 安装依赖  
    > pnpm install grammy -w
