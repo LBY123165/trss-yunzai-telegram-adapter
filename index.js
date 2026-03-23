@@ -1,6 +1,7 @@
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const grammyVersion = require("grammy/package.json").version;
+import fs from "fs"
+import path from "path"
+const grammyPkgPath = path.resolve(process.cwd(), "node_modules/grammy/package.json")
+const grammyVersion = JSON.parse(fs.readFileSync(grammyPkgPath, "utf-8")).version
 
 import makeConfig from "../../lib/plugins/config.js"
 import { Bot as GrammyBot, InputFile, InlineKeyboard } from "grammy";
