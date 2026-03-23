@@ -1,3 +1,7 @@
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const grammyVersion = require("grammy/package.json").version;
+
 import makeConfig from "../../lib/plugins/config.js"
 import { Bot as GrammyBot, InputFile, InlineKeyboard } from "grammy";
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -66,7 +70,7 @@ const adapter = new class TelegramAdapter {
     constructor() {
         this.id = "Telegram"
         this.name = "TelegramBot"
-        this.version = `grammy v1.28.0`
+        this.version = `GrammY v${grammyVersion}`
     }
 
     /**
@@ -568,7 +572,7 @@ const adapter = new class TelegramAdapter {
             id: this.id,
             name: this.name,
             app_name: "GrammY",
-            app_version: "v1.41.1",
+            app_version: `v${grammyVersion}`,
             version: this.version,
         }
         Bot[id].stat = {
