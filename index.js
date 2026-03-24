@@ -368,7 +368,7 @@ const adapter = new class TelegramAdapter {
             message_id = [message_id]
         const msgs = []
         for (const i of message_id)
-            msgs.push(await data.bot.deleteMessage(data.id, i, opts))
+            msgs.push(await data.bot.api.deleteMessage(data.id, i, opts))
         return msgs
     }
 
@@ -380,8 +380,23 @@ const adapter = new class TelegramAdapter {
      * @param opts - 可选参数，如 reply_markup (InlineKeyboard)
      */
     async editMsg(data, message_id, text, opts = {}) {
-        Bot.makeLog("info", `编辑消息：[${ data.id }] ${ message_id }`, data.self_id)
+        Bot.makeLog("info", `编辑消息：[${ data.id || data.chat_id || '' }] ${ message_id }`, data.self_id)
         try {
+            // 处理按钮中的 callback -> callback_data (如果插件传了 callback)
+            if (opts.reply_markup && Array.isArray(opts.reply_markup.inline_keyboard)) {
+                for (let row of opts.reply_markup.inline_keyboard) {
+                    for (let btn of row) {
+                        if (btn.callback && !btn.callback_data) {
+                            btn.callback_data = btn.callback;
+                            delete btn.callback;
+                        }
+                        if (btn.link && !btn.url) {
+                            btn.url = btn.link;
+                            delete btn.link;
+                        }
+                    }
+                }
+            }
             return await data.bot.api.editMessageText(data.id, message_id, text, opts)
         } catch (error) {
             Bot.makeLog("error", `编辑消息失败：[${ data.id }] ${ error.message }`, data.self_id)
@@ -428,6 +443,7 @@ const adapter = new class TelegramAdapter {
             ...i,
             sendMsg: (msg, opts) => this.sendMsg(i, msg, opts),
             recallMsg: (message_id, opts) => this.recallMsg(i, message_id, opts),
+            editMsg: (message_id, text, opts) => this.editMsg(i, message_id, text, opts),
             getInfo: () => i.bot.api.getChat(i.id),
             getAvatarUrl: () => this.getAvatarUrl(i),
         }
@@ -494,6 +510,7 @@ const adapter = new class TelegramAdapter {
         const data = {};
 
         data.bot = Bot[ctx.self_id];
+        data.self_id = ctx.self_id;
         data.post_type = "message";
         data.user_id = `tg_${ ctx.from.id }`
         data.sender = {
@@ -505,20 +522,40 @@ const adapter = new class TelegramAdapter {
         data.message = [];
         data.message_id = ctx.message.message_id;
         data.id = ctx.chat.id;
+        data.entities = ctx.message.entities || ctx.message.caption_entities || [];
         data.reply = (msg, clear = false, opts = {}) => {
             return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: data.message_id })
         }
         data.raw_message = "";
 
-        // 消息内容
-        if (ctx.message.text) {
-            data.message.push({ type: "text", text: ctx.message.text })
-            data.raw_message += ctx.message.text
+        // 消息内容 (普通文本)
+        const text = ctx.message.text || ctx.message.caption || ""
+        if (text) {
+            data.message.push({ type: "text", text: text })
+            data.raw_message += text
         }
+
+        // 媒体内容处理
+        if (ctx.message.photo) {
+            const photo = ctx.message.photo[ctx.message.photo.length - 1]
+            data.message.push({ type: "image", file_id: photo.file_id, file_unique_id: photo.file_unique_id })
+        } else if (ctx.message.sticker) {
+            data.message.push({ type: "sticker", file_id: ctx.message.sticker.file_id })
+        } else if (ctx.message.video) {
+            data.message.push({ type: "video", file_id: ctx.message.video.file_id })
+        } else if (ctx.message.voice) {
+            data.message.push({ type: "record", file_id: ctx.message.voice.file_id })
+        } else if (ctx.message.audio) {
+            data.message.push({ type: "audio", file_id: ctx.message.audio.file_id })
+        } else if (ctx.message.document) {
+            data.message.push({ type: "file", file_id: ctx.message.document.file_id, file_name: ctx.message.document.file_name })
+        }
+
         // 消息制作
         if (ctx.from.id === ctx.chat.id) {
             // 制作私发消息
             Bot.makeLog("info", `好友消息：[${ data.sender.nickname }(${ data.user_id })] ${ data.raw_message }`, data.self_id)
+            data.friend = data.bot.pickFriend(data.user_id);
         } else {
             // 制作群消息
             const groupMessage = ctx.update.message;
@@ -531,6 +568,7 @@ const adapter = new class TelegramAdapter {
             })
             // 制作完成，打印
             Bot.makeLog("info", `群消息：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ data.raw_message }`, data.self_id)
+            data.group = data.bot.pickGroup(data.group_id);
         }
 
         // 统计更新
@@ -603,7 +641,6 @@ const adapter = new class TelegramAdapter {
         Bot[id].on("callback_query:data", async (ctx) => {
             const callbackData = ctx.callbackQuery.data;
             const from = ctx.callbackQuery.from;
-            const message = ctx.callbackQuery.message;
 
             // 应答 TG 客户端（关闭按钮上的加载动画）
             await ctx.answerCallbackQuery();
@@ -619,25 +656,29 @@ const adapter = new class TelegramAdapter {
             };
             data.bot.fl.set(data.user_id, { ...from, ...data.sender });
 
-            // 消息内容 = callback_data
+            // 消息制作
+            data.message = [{ type: "text", text: callbackData }];
             data.msg = callbackData;
             data.raw_message = callbackData;
-            data.message = [{ type: "text", text: callbackData }];
 
             // 附加回调原始信息，方便高级插件使用
             data.callback_query_id = ctx.callbackQuery.id;
-            data.callback_message_id = message?.message_id;
-            data.id = message?.chat.id;
+            data.callback_message_id = ctx.msg?.message_id;
+            data.id = ctx.chat?.id;
             data.reply = (msg, clear = false, opts = {}) => {
                 return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: data.callback_message_id })
             }
 
-            if (message && message.chat.type !== "private") {
-                data.group_name = `${ message.chat.title || '' }`;
+            if (ctx.chat && ctx.chat.type !== "private") {
+                data.message_type = "group";
+                data.group_id = `tg_${ ctx.chat.id }`;
+                data.group_name = `${ ctx.chat.title || '' }`;
                 Bot.makeLog("info", `按钮回调：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+                data.group = data.bot.pickGroup(data.group_id);
             } else {
                 data.message_type = "private";
                 Bot.makeLog("info", `按钮回调：[${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+                data.friend = data.bot.pickFriend(data.user_id);
             }
 
             // 统计更新
