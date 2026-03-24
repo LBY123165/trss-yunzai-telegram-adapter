@@ -493,27 +493,35 @@ const adapter = new class TelegramAdapter {
             // 构造一文一图的情况，如果出现两张都是图片则给予后续逻辑处理
             if (Array.isArray(messages) &&　messages?.type !== 'node') {
                 // 找出媒体、文字和其他特殊段（如 reply, at, button）
-                const mediaAndOthers = messages.reduce(
-                    (acc, item) => {
-                        if (typeof item === "object") {
-                            if (item.type === "reply") {
-                                acc.reply = item;
-                                opts.reply_to_message_id = item.id;
-                            } else if (item.type === "at") {
-                                // 暂时不处理 at 转换，由后续 sendText/sendMessage 自然处理或者转换用户名
-                                acc.others += ` @${item.qq} `;
-                            } else if (item.type === "button") {
-                                handlers.button(item); // 直接调用 handler 来设置 opts.reply_markup
-                            } else {
-                                acc.media.push(item);
-                            }
+                const mediaAndOthers = { media: [], others: '', reply: null };
+                for (const item of messages) {
+                    if (typeof item === "object") {
+                        if (item.type === "reply") {
+                            mediaAndOthers.reply = item;
+                            opts.reply_to_message_id = item.id;
+                        } else if (item.type === "at") {
+                            // 调用 async handler，它会把翻译后的结果 push 到 textParts
+                            await handlers.at(item);
+                        } else if (item.type === "button") {
+                            // 注意：这里必须 await，因为它涉及 Redis 写入和 tgEncodeCallbackData
+                            await handlers.button(item);
+                        } else if (handlers[item.type]) {
+                            // 其他如 image/video/record/file/sticker/animation/location/contact/poll/dice 等
+                            mediaAndOthers.media.push(item);
                         } else {
-                            acc.others += item;
+                            // 默认 fallback
+                            await handlers.default(item);
                         }
-                        return acc;
-                    },
-                    { media: [], others: '', reply: null }
-                );
+                    } else {
+                        mediaAndOthers.others += item;
+                    }
+                }
+
+                // 合并之前异步 handler (如 at) 产生的文本
+                if (textParts.length > 0) {
+                    mediaAndOthers.others = textParts.join("") + mediaAndOthers.others;
+                    textParts = [];
+                }
                 // 判断是否有媒体，没有就发送文字，有就图文并茂
                 if (mediaAndOthers.media.length === 1) {
                     const singleMedia = mediaAndOthers.media[0];
@@ -659,7 +667,8 @@ const adapter = new class TelegramAdapter {
                 for (let row of opts.reply_markup.inline_keyboard) {
                     for (let btn of row) {
                         if (btn.callback && !btn.callback_data) {
-                            btn.callback_data = btn.callback;
+                            // 调用异步函数，把原本可能超长的回调数据也存入 Redis，得到一个短 ID。
+                            btn.callback_data = await tgEncodeCallbackData(data.self_id, btn.callback);
                             delete btn.callback;
                         }
                         if (btn.link && !btn.url) {
