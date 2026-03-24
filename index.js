@@ -188,7 +188,7 @@ const { config, configSave } = await makeConfig("Telegram", {
  * @returns {Promise<{}>}
  */
 async function constructFileType(data) {
-    const file = { }
+    const file = {}
     // 构造 url 和 buffer
     if (Buffer.isBuffer(data.file)) {
         file.url = data.name || "Buffer"
@@ -202,7 +202,7 @@ async function constructFileType(data) {
         const timestamp = Date.now().toString(36);
         const randomString = Math.random().toString(36).substring(2, 10);
         const extension = file.type?.ext; // 假设 file.type.ext 是文件的扩展名
-        file.name ??= `${ timestamp }.${ randomString }.${ extension }`;
+        file.name ??= `${timestamp}.${randomString}.${extension}`;
     }
     return file;
 }
@@ -216,9 +216,9 @@ async function constructFileType(data) {
  */
 function formatSendMessage(ctx, fileInfo = {} || [], text = "") {
     if (Array.isArray(fileInfo)) {
-        return `[${ ctx.id }] ${text} ${fileInfo.length} 个媒体文件`;
+        return `[${ctx.id}] ${text} ${fileInfo.length} 个媒体文件`;
     } else {
-        return `[${ ctx.id }] ${text} ${ fileInfo.name }(${ fileInfo.url } ${ (fileInfo.buffer.length / 1024).toFixed(2) }KB)`;
+        return `[${ctx.id}] ${text} ${fileInfo.name}(${fileInfo.url} ${(fileInfo.buffer.length / 1024).toFixed(2)}KB)`;
     }
 }
 
@@ -471,8 +471,10 @@ const adapter = new class TelegramAdapter {
                     for (const btn of row) {
                         if (btn.link) {
                             keyboard.url(btn.text, btn.link);
-                        } else if (btn.callback) {
-                            const encoded = await tgEncodeCallbackData(ctx.self_id, btn.callback);
+                        } else if (btn.input) {
+                            keyboard.switchInlineCurrent(btn.text, String(btn.input));
+                        } else if (btn.callback || btn.data) {
+                            const encoded = await tgEncodeCallbackData(ctx.self_id, btn.callback || btn.data);
                             keyboard.text(btn.text, encoded);
                         }
                     }
@@ -491,7 +493,7 @@ const adapter = new class TelegramAdapter {
          */
         const sendHandler = async (messages) => {
             // 构造一文一图的情况，如果出现两张都是图片则给予后续逻辑处理
-            if (Array.isArray(messages) &&　messages?.type !== 'node') {
+            if (Array.isArray(messages) && messages?.type !== 'node') {
                 // 找出媒体、文字和其他特殊段（如 reply, at, button）
                 const mediaAndOthers = { media: [], others: '', reply: null };
                 for (const item of messages) {
@@ -500,27 +502,16 @@ const adapter = new class TelegramAdapter {
                             mediaAndOthers.reply = item;
                             opts.reply_to_message_id = item.id;
                         } else if (item.type === "at") {
-                            // 调用 async handler，它会把翻译后的结果 push 到 textParts
-                            await handlers.at(item);
+                            // 暂时不处理 at 转换，由后续 sendText/sendMessage 自然处理或者转换用户名
+                            mediaAndOthers.others += ` @${item.qq} `;
                         } else if (item.type === "button") {
-                            // 注意：这里必须 await，因为它涉及 Redis 写入和 tgEncodeCallbackData
-                            await handlers.button(item);
-                        } else if (handlers[item.type]) {
-                            // 其他如 image/video/record/file/sticker/animation/location/contact/poll/dice 等
-                            mediaAndOthers.media.push(item);
+                            await handlers.button(item); // 配合 async-await 调用
                         } else {
-                            // 默认 fallback
-                            await handlers.default(item);
+                            mediaAndOthers.media.push(item);
                         }
                     } else {
                         mediaAndOthers.others += item;
                     }
-                }
-
-                // 合并之前异步 handler (如 at) 产生的文本
-                if (textParts.length > 0) {
-                    mediaAndOthers.others = textParts.join("") + mediaAndOthers.others;
-                    textParts = [];
                 }
                 // 判断是否有媒体，没有就发送文字，有就图文并茂
                 if (mediaAndOthers.media.length === 1) {
@@ -557,7 +548,7 @@ const adapter = new class TelegramAdapter {
                         const file = await constructFileType(mediaAndOthers.media[i]);
                         const t = mediaAndOthers.media[i].type;
                         const mType = t === "video" ? "video" : (t === "file" ? "document" : "photo");
-                        const constructMedia = { type: mType, media: new InputFile(file.buffer, file.name)}
+                        const constructMedia = { type: mType, media: new InputFile(file.buffer, file.name) }
                         if (i === 0) {
                             constructMedia.caption = mediaAndOthers.others; // 仅在第一个文件中添加 caption
                         }
@@ -586,7 +577,7 @@ const adapter = new class TelegramAdapter {
                     }
                 }
                 return;
-            } else if (Array.isArray(messages?.data) &&　messages?.type === 'node') {
+            } else if (Array.isArray(messages?.data) && messages?.type === 'node') {
                 const messagesData = messages.data;
                 // 过滤图片和视频合并发送
                 const others = [];
@@ -596,10 +587,10 @@ const adapter = new class TelegramAdapter {
                     const singleMessage = item.message;
                     if (singleMessage.type === "image") {
                         const file = await constructFileType(singleMessage);
-                        mediaCollection.push({ type: 'photo', media: new InputFile(file.buffer, file.name)});
+                        mediaCollection.push({ type: 'photo', media: new InputFile(file.buffer, file.name) });
                     } else if (singleMessage.type === "video") {
                         const file = await constructFileType(singleMessage);
-                        mediaCollection.push({ type: 'video', media: new InputFile(file.buffer, file.name)});
+                        mediaCollection.push({ type: 'video', media: new InputFile(file.buffer, file.name) });
                     } else {
                         others.push(item.message);
                     }
@@ -643,7 +634,7 @@ const adapter = new class TelegramAdapter {
      * @returns {Promise<*[]>}
      */
     async recallMsg(data, message_id, opts) {
-        Bot.makeLog("info", `撤回消息：[${ data.id }] ${ message_id }`, data.self_id)
+        Bot.makeLog("info", `撤回消息：[${data.id}] ${message_id}`, data.self_id)
         if (!Array.isArray(message_id))
             message_id = [message_id]
         const msgs = []
@@ -660,16 +651,19 @@ const adapter = new class TelegramAdapter {
      * @param opts - 可选参数，如 reply_markup (InlineKeyboard)
      */
     async editMsg(data, message_id, text, opts = {}) {
-        Bot.makeLog("info", `编辑消息：[${ data.id || data.chat_id || '' }] ${ message_id }`, data.self_id)
+        Bot.makeLog("info", `编辑消息：[${data.id || data.chat_id || ''}] ${message_id}`, data.self_id)
         try {
             // 处理按钮中的 callback -> callback_data (如果插件传了 callback)
             if (opts.reply_markup && Array.isArray(opts.reply_markup.inline_keyboard)) {
                 for (let row of opts.reply_markup.inline_keyboard) {
                     for (let btn of row) {
                         if (btn.callback && !btn.callback_data) {
-                            // 调用异步函数，把原本可能超长的回调数据也存入 Redis，得到一个短 ID。
                             btn.callback_data = await tgEncodeCallbackData(data.self_id, btn.callback);
                             delete btn.callback;
+                        }
+                        if (btn.data && !btn.callback_data) {
+                            btn.callback_data = await tgEncodeCallbackData(data.self_id, btn.data);
+                            delete btn.data;
                         }
                         if (btn.link && !btn.url) {
                             btn.url = btn.link;
@@ -680,7 +674,7 @@ const adapter = new class TelegramAdapter {
             }
             return await data.bot.api.editMessageText(data.id, message_id, text, opts)
         } catch (error) {
-            Bot.makeLog("error", `编辑消息失败：[${ data.id }] ${ error.message }`, data.self_id)
+            Bot.makeLog("error", `编辑消息失败：[${data.id}] ${error.message}`, data.self_id)
         }
     }
 
@@ -698,9 +692,9 @@ const adapter = new class TelegramAdapter {
             // 制作成URL
             const fileId = photos.photos[0][0].file_id;
             const file = await ctx.bot.api.getFile(fileId);
-            return `https://api.telegram.org/file/bot${ ctx.bot.token }/${ file.file_path }`;
+            return `https://api.telegram.org/file/bot${ctx.bot.token}/${file.file_path}`;
         } catch (err) {
-            logger.error(`获取头像错误：${ logger.red(err) }`)
+            logger.error(`获取头像错误：${logger.red(err)}`)
             return false
         }
     }
@@ -964,7 +958,7 @@ const adapter = new class TelegramAdapter {
         data.bot = Bot[ctx.self_id];
         data.self_id = ctx.self_id;
         data.post_type = "message";
-        data.user_id = `tg_${ ctx.from.id }`
+        data.user_id = `tg_${ctx.from.id}`
         data.sender = {
             user_id: data.user_id,
             nickname: ctx.from.first_name || ctx.from.username || "Unknown",
@@ -976,9 +970,11 @@ const adapter = new class TelegramAdapter {
         data.id = ctx.chat.id;
         data.entities = ctx.message.entities || ctx.message.caption_entities || [];
         data.reply = (msg, clear = false, opts = {}) => {
-            return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: data.message_id })
+            const reply_id = Array.isArray(data.message_id) ? data.message_id[0] : data.message_id;
+            return this.sendMsg(data, msg, { ...opts, clear_history: clear, reply_to_message_id: reply_id })
         }
         data.raw_message = "";
+        data.is_forward = !!(ctx.message.forward_origin || ctx.message.forward_from || ctx.message.forward_from_chat);
 
         const replyTo = ctx.message.reply_to_message;
         if (replyTo?.message_id) {
@@ -1054,27 +1050,27 @@ const adapter = new class TelegramAdapter {
         // 消息制作
         if (ctx.from.id === ctx.chat.id) {
             // 制作私发消息
-            Bot.makeLog("info", `好友消息：[${ data.sender.nickname }(${ data.user_id })] ${ data.raw_message }`, data.self_id)
+            Bot.makeLog("info", `好友消息：[${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
             data.friend = data.bot.pickFriend(data.user_id);
         } else {
             // 制作群消息
             const groupMessage = ctx.update.message;
-            data.group_id = `tg_${ groupMessage.chat.id }`
-            data.group_name = `${ groupMessage.chat.title || '' }${ groupMessage.chat.username ? '-' + groupMessage.chat.username : '' }`
+            data.group_id = `tg_${groupMessage.chat.id}`
+            data.group_name = `${groupMessage.chat.title || ''}${groupMessage.chat.username ? '-' + groupMessage.chat.username : ''}`
             data.bot.gl.set(groupMessage.chat.id, {
                 ...groupMessage.chat,
                 group_id: data.group_id,
                 group_name: data.group_name,
             })
             // 制作完成，打印
-            Bot.makeLog("info", `群消息：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ data.raw_message }`, data.self_id)
+            Bot.makeLog("info", `群消息：[${data.group_name}(${data.group_id}), ${data.sender.nickname}(${data.user_id})] ${data.raw_message}`, data.self_id)
             data.group = data.bot.pickGroup(data.group_id);
         }
 
         // 统计更新
         data.bot.stat.recv_msg_cnt++
         if (global.redis) {
-            redis.incr(`Yz:count:receive:msg:bot:${ data.self_id }:total`)
+            redis.incr(`Yz:count:receive:msg:bot:${data.self_id}:total`)
         }
 
         tgCacheMessage(ctx.self_id, ctx.chat.id, ctx.message.message_id, {
@@ -1088,7 +1084,7 @@ const adapter = new class TelegramAdapter {
             raw_message: data.raw_message,
         });
 
-        Bot.em(`${ data.post_type }.${ data.message_type }`, data);
+        Bot.em(`${data.post_type}.${data.message_type}`, data);
     }
 
     /**
@@ -1116,7 +1112,7 @@ const adapter = new class TelegramAdapter {
             throw new Error('Failed to retrieve bot info');
         }
         // TG 机器人 ID
-        const id = `tg_${ grammyBot.info.id }`
+        const id = `tg_${grammyBot.info.id}`
 
         // 配置信息
         Bot[id] = grammyBot;
@@ -1172,7 +1168,7 @@ const adapter = new class TelegramAdapter {
                     base.bot = Bot[id];
                     base.self_id = id;
                     base.post_type = "message";
-                    base.user_id = `tg_${ first.from.id }`;
+                    base.user_id = `tg_${first.from.id}`;
                     base.sender = {
                         user_id: base.user_id,
                         nickname: first.from.first_name || first.from.username || "Unknown",
@@ -1180,11 +1176,13 @@ const adapter = new class TelegramAdapter {
                     base.bot.fl.set(base.user_id, { ...first.from, ...base.sender });
                     base.message_type = first.chat.type === "supergroup" ? "group" : first.chat.type;
                     base.message = [];
-                    base.message_id = first.message.message_id;
+                    base.message_ids = buf.items.map(m => m.message.message_id);
+                    base.message_id = base.message_ids; // TRSS-Yunzai 习惯上在这里放数组或单个ID
                     base.id = first.chat.id;
                     base.entities = first.message.entities || first.message.caption_entities || [];
                     base.reply = (msg, clear = false, opts = {}) => {
-                        return this.sendMsg(base, msg, { ...opts, clear_history: clear, reply_to_message_id: base.message_id })
+                        const reply_id = Array.isArray(base.message_id) ? base.message_id[0] : base.message_id;
+                        return this.sendMsg(base, msg, { ...opts, clear_history: clear, reply_to_message_id: reply_id })
                     }
                     base.raw_message = first.message.text || first.message.caption || "";
                     const replyTo = first.message.reply_to_message;
@@ -1205,23 +1203,23 @@ const adapter = new class TelegramAdapter {
                     }
 
                     if (first.from.id === first.chat.id) {
-                        Bot.makeLog("info", `好友消息：[${ base.sender.nickname }(${ base.user_id })] ${ base.raw_message }`, id)
+                        Bot.makeLog("info", `好友消息：[${base.sender.nickname}(${base.user_id})] ${base.raw_message}`, id)
                         base.friend = base.bot.pickFriend(base.user_id);
                     } else {
-                        base.group_id = `tg_${ first.chat.id }`
-                        base.group_name = `${ first.chat.title || '' }${ first.chat.username ? '-' + first.chat.username : '' }`
+                        base.group_id = `tg_${first.chat.id}`
+                        base.group_name = `${first.chat.title || ''}${first.chat.username ? '-' + first.chat.username : ''}`
                         base.bot.gl.set(first.chat.id, {
                             ...first.chat,
                             group_id: base.group_id,
                             group_name: base.group_name,
                         })
-                        Bot.makeLog("info", `群消息：[${ base.group_name }(${ base.group_id }), ${ base.sender.nickname }(${ base.user_id })] ${ base.raw_message }`, id)
+                        Bot.makeLog("info", `群消息：[${base.group_name}(${base.group_id}), ${base.sender.nickname}(${base.user_id})] ${base.raw_message}`, id)
                         base.group = base.bot.pickGroup(base.group_id);
                     }
 
                     base.bot.stat.recv_msg_cnt++
                     if (global.redis) {
-                        redis.incr(`Yz:count:receive:msg:bot:${ id }:total`)
+                        redis.incr(`Yz:count:receive:msg:bot:${id}:total`)
                     }
 
                     tgCacheMessage(id, first.chat.id, first.message.message_id, {
@@ -1235,7 +1233,7 @@ const adapter = new class TelegramAdapter {
                         raw_message: base.raw_message,
                     });
 
-                    Bot.em(`${ base.post_type }.${ base.message_type }`, base);
+                    Bot.em(`${base.post_type}.${base.message_type}`, base);
                 } finally {
                     this.mediaGroupBuffer.delete(key);
                 }
@@ -1255,7 +1253,7 @@ const adapter = new class TelegramAdapter {
             data.bot = Bot[id];
             data.self_id = id;
             data.post_type = "message";
-            data.user_id = `tg_${ from.id }`;
+            data.user_id = `tg_${from.id}`;
             data.sender = {
                 user_id: data.user_id,
                 nickname: from.first_name || from.username || "Unknown",
@@ -1277,31 +1275,31 @@ const adapter = new class TelegramAdapter {
 
             if (ctx.chat && ctx.chat.type !== "private") {
                 data.message_type = "group";
-                data.group_id = `tg_${ ctx.chat.id }`;
-                data.group_name = `${ ctx.chat.title || '' }`;
-                Bot.makeLog("info", `按钮回调：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+                data.group_id = `tg_${ctx.chat.id}`;
+                data.group_name = `${ctx.chat.title || ''}`;
+                Bot.makeLog("info", `按钮回调：[${data.group_name}(${data.group_id}), ${data.sender.nickname}(${data.user_id})] ${callbackData}`, id);
                 data.group = data.bot.pickGroup(data.group_id);
             } else {
                 data.message_type = "private";
-                Bot.makeLog("info", `按钮回调：[${ data.sender.nickname }(${ data.user_id })] ${ callbackData }`, id);
+                Bot.makeLog("info", `按钮回调：[${data.sender.nickname}(${data.user_id})] ${callbackData}`, id);
                 data.friend = data.bot.pickFriend(data.user_id);
             }
 
             // 统计更新
             data.bot.stat.recv_msg_cnt++
             if (global.redis) {
-                redis.incr(`Yz:count:receive:msg:bot:${ id }:total`)
+                redis.incr(`Yz:count:receive:msg:bot:${id}:total`)
             }
 
-            Bot.em(`${ data.post_type }.${ data.message_type }`, data);
+            Bot.em(`${data.post_type}.${data.message_type}`, data);
         })
 
         // 监听群成员变动 (notice.group_increase/group_decrease)
         Bot[id].on("chat_member", async (ctx) => {
             const { chat_member } = ctx;
             const { chat, from, new_chat_member, old_chat_member } = chat_member;
-            const group_id = `tg_${ chat.id }`;
-            const user_id = `tg_${ new_chat_member.user.id }`;
+            const group_id = `tg_${chat.id}`;
+            const user_id = `tg_${new_chat_member.user.id}`;
 
             const data = {
                 bot: Bot[id],
@@ -1310,7 +1308,7 @@ const adapter = new class TelegramAdapter {
                 group_id,
                 group_name: chat.title || "",
                 user_id,
-                operator_id: from ? `tg_${ from.id }` : user_id,
+                operator_id: from ? `tg_${from.id}` : user_id,
             };
 
             const oldStatus = old_chat_member?.status;
@@ -1319,17 +1317,17 @@ const adapter = new class TelegramAdapter {
             // 1) 入群 / 退群
             if (oldStatus === "left" && newStatus !== "left") {
                 data.notice_type = "group_increase";
-                Bot.makeLog("info", `成员入群：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员入群：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             if (newStatus === "left" || newStatus === "kicked") {
                 data.notice_type = "group_decrease";
                 data.sub_type = newStatus === "kicked" ? "kick" : "leave";
-                Bot.makeLog("info", `成员退群：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员退群：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             // 2) 管理员变动
@@ -1338,26 +1336,26 @@ const adapter = new class TelegramAdapter {
             if (oldIsAdmin !== newIsAdmin) {
                 data.notice_type = "group_admin";
                 data.sub_type = newIsAdmin ? "set" : "unset";
-                Bot.makeLog("info", `管理员变动：[${ data.group_name }(${ group_id })] ${ user_id } ${ data.sub_type }`, id);
+                Bot.makeLog("info", `管理员变动：[${data.group_name}(${group_id})] ${user_id} ${data.sub_type}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             // 3) 封禁/解封（kicked <-> 非 kicked）
             if (oldStatus === "kicked" && newStatus !== "kicked") {
                 data.notice_type = "group_ban";
                 data.sub_type = "lift";
-                Bot.makeLog("info", `成员解封：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员解封：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             if (newStatus === "kicked" && oldStatus !== "kicked") {
                 data.notice_type = "group_ban";
                 data.sub_type = "ban";
-                Bot.makeLog("info", `成员封禁：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员封禁：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             // 4) 禁言/解除禁言（restricted 权限变动）
@@ -1370,24 +1368,24 @@ const adapter = new class TelegramAdapter {
                 data.notice_type = "group_mute";
                 data.sub_type = "mute";
                 data.duration = new_chat_member?.until_date ? Math.max(0, Number(new_chat_member.until_date) - Math.floor(Date.now() / 1000)) : undefined;
-                Bot.makeLog("info", `成员禁言：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员禁言：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
 
             if ((oldIsRestricted && !newIsRestricted) || (oldCanSend === false && newCanSend !== false)) {
                 data.notice_type = "group_mute";
                 data.sub_type = "unmute";
-                Bot.makeLog("info", `成员解除禁言：[${ data.group_name }(${ group_id })] ${ user_id }`, id);
+                Bot.makeLog("info", `成员解除禁言：[${data.group_name}(${group_id})] ${user_id}`, id);
                 data.group = data.bot.pickGroup(group_id);
-                return Bot.em(`notice.${ data.notice_type }`, data);
+                return Bot.em(`notice.${data.notice_type}`, data);
             }
         })
 
         // 监听自身群权限变动 (notice.bot_status_change)
         Bot[id].on("my_chat_member", async (ctx) => {
             const { chat, new_chat_member, old_chat_member } = ctx.my_chat_member;
-            const group_id = `tg_${ chat.id }`;
+            const group_id = `tg_${chat.id}`;
 
             const data = {
                 bot: Bot[id],
@@ -1399,19 +1397,19 @@ const adapter = new class TelegramAdapter {
 
             if (new_chat_member.status === "member" && old_chat_member.status === "left") {
                 data.notice_type = "bot_join_group";
-                Bot.makeLog("info", `Bot 加入群组：[${ data.group_name }(${ group_id })]`, id);
+                Bot.makeLog("info", `Bot 加入群组：[${data.group_name}(${group_id})]`, id);
             } else if (new_chat_member.status === "left" || new_chat_member.status === "kicked") {
                 data.notice_type = "bot_leave_group";
-                Bot.makeLog("info", `Bot 离开群组：[${ data.group_name }(${ group_id })]`, id);
+                Bot.makeLog("info", `Bot 离开群组：[${data.group_name}(${group_id})]`, id);
             } else if (new_chat_member.status === "administrator" && old_chat_member.status !== "administrator") {
                 data.notice_type = "bot_promote";
-                Bot.makeLog("info", `Bot 被提升为管理员：[${ data.group_name }(${ group_id })]`, id);
+                Bot.makeLog("info", `Bot 被提升为管理员：[${data.group_name}(${group_id})]`, id);
             } else {
                 return;
             }
 
             data.group = data.bot.pickGroup(group_id);
-            Bot.em(`notice.${ data.notice_type }`, data);
+            Bot.em(`notice.${data.notice_type}`, data);
         })
 
         // 入群申请 (request.group.add)
@@ -1426,11 +1424,11 @@ const adapter = new class TelegramAdapter {
                 post_type: "request",
                 request_type: "group",
                 sub_type: "add",
-                group_id: `tg_${ chat.id }`,
+                group_id: `tg_${chat.id}`,
                 group_name: chat.title || "",
-                user_id: `tg_${ from.id }`,
+                user_id: `tg_${from.id}`,
                 sender: {
-                    user_id: `tg_${ from.id }`,
+                    user_id: `tg_${from.id}`,
                     nickname: from.first_name || from.username || "Unknown",
                 },
                 comment: r.bio || "",
@@ -1440,7 +1438,7 @@ const adapter = new class TelegramAdapter {
             data.bot.fl.set(data.user_id, { ...from, ...data.sender });
             data.group = data.bot.pickGroup(data.group_id);
 
-            Bot.makeLog("info", `入群申请：[${ data.group_name }(${ data.group_id }), ${ data.sender.nickname }(${ data.user_id })] ${ data.comment || "" }`, id);
+            Bot.makeLog("info", `入群申请：[${data.group_name}(${data.group_id}), ${data.sender.nickname}(${data.user_id})] ${data.comment || ""}`, id);
             Bot.em("request.group.add", data);
         })
 
@@ -1460,9 +1458,9 @@ const adapter = new class TelegramAdapter {
                 message_id: m.message_id,
                 id: chat.id,
                 message_type: chat.type === "supergroup" ? "group" : chat.type,
-                user_id: `tg_${ from.id }`,
+                user_id: `tg_${from.id}`,
                 sender: {
-                    user_id: `tg_${ from.id }`,
+                    user_id: `tg_${from.id}`,
                     nickname: from.first_name || from.username || "Unknown",
                 },
                 raw_message: m.text || m.caption || "",
@@ -1474,19 +1472,19 @@ const adapter = new class TelegramAdapter {
 
             // 群/私聊信息补齐
             if (chat.type !== "private") {
-                data.group_id = `tg_${ chat.id }`;
-                data.group_name = `${ chat.title || '' }${ chat.username ? '-' + chat.username : '' }`;
+                data.group_id = `tg_${chat.id}`;
+                data.group_name = `${chat.title || ''}${chat.username ? '-' + chat.username : ''}`;
                 data.group = data.bot.pickGroup(data.group_id);
             } else {
                 data.friend = data.bot.pickFriend(data.user_id);
             }
 
-            Bot.makeLog("info", `消息编辑：[${ chat.type !== "private" ? data.group_name + "(" + data.group_id + ")" : data.sender.nickname + "(" + data.user_id + ")" }] ${ data.raw_message }`, id);
+            Bot.makeLog("info", `消息编辑：[${chat.type !== "private" ? data.group_name + "(" + data.group_id + ")" : data.sender.nickname + "(" + data.user_id + ")"}] ${data.raw_message}`, id);
             Bot.em("notice.message_edit", data);
         })
 
-        Bot.makeLog("mark", `${ this.name }(${ this.id }) - [${ Bot[id].nickname }] - ${ this.version } 已连接`, id)
-        Bot.em(`connect.${ id }`, { self_id: id })
+        Bot.makeLog("mark", `${this.name}(${this.id}) - [${Bot[id].nickname}] - ${this.version} 已连接`, id)
+        Bot.em(`connect.${id}`, { self_id: id })
         // 这里不要加 await 防止进程阻塞
         Bot[id].start();
         return true;
@@ -1528,19 +1526,19 @@ export class Telegram extends plugin {
     }
 
     List() {
-        this.reply(`共${ config.token.length }个账号：\n${ config.token.join("\n") }`, true)
+        this.reply(`共${config.token.length}个账号：\n${config.token.join("\n")}`, true)
     }
 
     async Token() {
         const token = this.e.msg.replace(/^#[Tt][Gg]设置/, "").trim()
         if (config.token.includes(token)) {
             config.token = config.token.filter(item => item !== token)
-            this.reply(`账号已删除，重启后生效，共${ config.token.length }个账号`, true)
+            this.reply(`账号已删除，重启后生效，共${config.token.length}个账号`, true)
         } else {
             if (await adapter.connect(token)) {
 
                 config.token.push(token)
-                this.reply(`账号已连接，共${ config.token.length }个账号`, true)
+                this.reply(`账号已连接，共${config.token.length}个账号`, true)
             } else {
                 this.reply(`账号连接失败`, true)
                 return false
@@ -1553,10 +1551,10 @@ export class Telegram extends plugin {
         const proxy = this.e.msg.replace(/^#[Tt][Gg](代理|反代)/, "").trim()
         if (this.e.msg.match("代理")) {
             config.proxy = proxy
-            this.reply(`代理已${ proxy ? "设置" : "删除" }，重启后生效`, true)
+            this.reply(`代理已${proxy ? "设置" : "删除"}，重启后生效`, true)
         } else {
             config.reverseProxy = proxy
-            this.reply(`反代已${ proxy ? "设置" : "删除" }，重启后生效`, true)
+            this.reply(`反代已${proxy ? "设置" : "删除"}，重启后生效`, true)
         }
         await configSave()
     }
