@@ -4,7 +4,7 @@ const grammyPkgPath = path.resolve(process.cwd(), "node_modules/grammy/package.j
 const grammyVersion = JSON.parse(fs.readFileSync(grammyPkgPath, "utf-8")).version
 
 import makeConfig from "../../lib/plugins/config.js"
-import { Bot as GrammyBot, InputFile, InlineKeyboard } from "grammy";
+import { Bot as GrammyBot, InputFile, InlineKeyboard, Keyboard } from "grammy";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { fileTypeFromBuffer } from "file-type";
 import imageSize from "image-size";
@@ -464,22 +464,51 @@ const adapter = new class TelegramAdapter {
                 }
             },
             "button": async (i) => {
-                const keyboard = new InlineKeyboard();
+                if (i.layout === "remove") {
+                    opts.reply_markup = { remove_keyboard: true };
+                    return;
+                }
+                const isReply = i.layout === "reply";
+                const keyboard = isReply ? new Keyboard() : new InlineKeyboard();
                 const btnData = i?.data ?? i?.buttons ?? [];
                 const rows = Array.isArray(btnData?.[0]) ? btnData : [btnData];
+
                 for (const row of rows) {
                     for (const btn of row) {
-                        if (btn.link) {
-                            keyboard.url(btn.text, btn.link);
-                        } else if (btn.input) {
-                            keyboard.switchInlineCurrent(btn.text, String(btn.input));
-                        } else if (btn.callback || btn.data) {
-                            const encoded = await tgEncodeCallbackData(ctx.self_id, btn.callback || btn.data);
-                            keyboard.text(btn.text, encoded);
+                        if (isReply) {
+                            // 底部按鈕 (Reply Keyboard)
+                            if (btn.contact) {
+                                keyboard.requestContact(btn.text);
+                            } else if (btn.location) {
+                                keyboard.requestLocation(btn.text);
+                            } else if (btn.poll) {
+                                keyboard.requestPoll(btn.text, btn.poll);
+                            } else if (btn.webApp) {
+                                keyboard.webApp(btn.text, btn.webApp);
+                            } else {
+                                keyboard.text(btn.text);
+                            }
+                        } else {
+                            // 內嵌按鈕 (Inline Keyboard)
+                            if (btn.link) {
+                                keyboard.url(btn.text, btn.link);
+                            } else if (btn.input) {
+                                keyboard.switchInlineCurrent(btn.text, String(btn.input));
+                            } else if (btn.callback || btn.data) {
+                                const encoded = await tgEncodeCallbackData(ctx.self_id, btn.callback || btn.data);
+                                keyboard.text(btn.text, encoded);
+                            }
                         }
                     }
                     keyboard.row();
                 }
+
+                if (isReply) {
+                    if (i.resized !== false) keyboard.resized(); // 默认开启 resized，否则按钮太大
+                    if (i.persistent) keyboard.persistent();
+                    if (i.oneTime) keyboard.oneTime();
+                }
+
                 opts.reply_markup = keyboard;
             },
             "default": async (i) => {
