@@ -1325,7 +1325,7 @@ const adapter = new class TelegramAdapter {
 
         // 监听群成员变动 (notice.group_increase/group_decrease)
         Bot[id].on("chat_member", async (ctx) => {
-            const { chat_member } = ctx;
+            const { chat_member } = ctx.update;
             const { chat, from, new_chat_member, old_chat_member } = chat_member;
             const group_id = `tg_${chat.id}`;
             const user_id = `tg_${new_chat_member.user.id}`;
@@ -1413,7 +1413,7 @@ const adapter = new class TelegramAdapter {
 
         // 监听自身群权限变动 (notice.bot_status_change)
         Bot[id].on("my_chat_member", async (ctx) => {
-            const { chat, new_chat_member, old_chat_member } = ctx.my_chat_member;
+            const { chat, new_chat_member, old_chat_member } = ctx.update.my_chat_member;
             const group_id = `tg_${chat.id}`;
 
             const data = {
